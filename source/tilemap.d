@@ -70,17 +70,13 @@ private auto clamp_to (T)(fvec v, ref TileMap!T tiles)
 	).fmap!(to!int);
 }
 
-struct Neighborhood (S)
-{
-	
-}
 auto neighborhood (T)(ref TileMap!T tiles, fvec pos, float radius)
 {
 	ivec max = (pos + radius + 1).clamp_to (tiles),
 		min = (pos - radius).clamp_to (tiles);
 
-	return map!fvec (orthotope (interval(min.x, max.x), interval(min.y, max.y)))
-		.zip (tiles[min.x..max.x, min.y..max.y]);
+	return map!fvec (orthotope (tiles.limit!0, tiles.limit!1))
+		.zip (tiles[])[min.x..max.x, min.y..max.y];
 }
 
 auto box_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float width)
@@ -225,10 +221,22 @@ void main()
 		.array
 	);
 
-    Tile[] tiles = tmap[].lexi.cache;
-
-    Spritesheet player = new Spritesheet(player_tex, Rect(0, 0, 32, 32));
-    player.setPosition(tmap[].lexi.filter!(t => t.is_start_tile).front.pos);
+	struct Player
+	{
+		fvec pos ()
+		{
+			return spritesheet.getPosition().tupleof.fvec/MOVE;
+		}
+		void pos (Vector2f pos)
+		{
+			spritesheet.setPosition(pos*MOVE);
+		}
+		Spritesheet spritesheet;
+		alias spritesheet this;
+	}
+ 	auto player = Player (new Spritesheet(player_tex, Rect(0, 0, 32, 32)));
+    
+    player.pos = tmap[].lexi.filter!(t => t.is_start_tile).front.pos;
     player.setRotationCenter(16, 16);
 
     Font fnt = Font((path)~"samples/font/arial.ttf", 12);
@@ -250,21 +258,12 @@ void main()
         if (sw.getElapsedTicks() > TICKS_PER_FRAME) {
             sw.reset();
 
-			auto ground_contact = tmap.neighborhood (
-				player.getPosition().tupleof.fvec / MOVE, 2
-			).unzip[1]
-				[$/2, 2].sprite is null;
+			auto ground_contact = tmap[player.pos.x.to!int, player.pos.y.to!int + 1].sprite !is null;
 
 			auto center (T)(Interval!(T,T) ival)
 			{
 				return ival.left + ival.width/2f;
 			}
-
-			auto xxx = tmap.neighborhood (
-				player.getPosition().tupleof.fvec / MOVE, 2
-			).unzip[1];
-			writeln (player.getPosition().tupleof.fvec / MOVE, ` `, [center(xxx.domain[].bounds[0]), center(xxx.domain[].bounds[1])]);
-			writeln ("\t", xxx.domain[].bounds[0], ` `, xxx.domain[].bounds[1]);
 
 			if (!ground_contact)
 				player.move(0, GRAVITY);
