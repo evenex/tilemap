@@ -108,12 +108,12 @@ auto circle_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, 
 		.map!((_,tile) => tile)
 		.filter!condition;
 }
-Maybe!(ElementType!T) point_query (T)(ref TileMap!T tiles, Vector2f pos)
+Maybe!(ElementType!T) point_query (T)(ref TileMap!T tiles, fvec pos)
 {
-	auto ipos = tuple (pos.x, pos.y).fvec.fmap!(to!int);
+	auto ipos = pos.fmap!(to!int);
 
 	if (
-		ipos.x.is_contained_in (tiles[].limit!0) 
+		ipos.x.is_contained_in (tiles[].limit!0)  // REVIEW vec in orthotope
 		&& ipos.y.is_contained_in (tiles[].limit!1)
 	)
 
@@ -241,7 +241,6 @@ void main()
 
     Font fnt = Font((path)~"samples/font/arial.ttf", 12);
     Text fps = new Text(fnt);
-    Text pos_txt = new Text(fnt);
 	fps.setPosition(MAP_WIDTH * TILE_SIZE - 96, 4);
 
     StopWatch sw;
@@ -258,16 +257,20 @@ void main()
         if (sw.getElapsedTicks() > TICKS_PER_FRAME) {
             sw.reset();
 
-			auto ground_contact = tmap[player.pos.x.to!int, player.pos.y.to!int + 1].sprite !is null;
+			bool ground_contact;
 
-			auto center (T)(Interval!(T,T) ival)
-			{
-				return ival.left + ival.width/2f;
+            if (tmap.point_query (player.pos).fmap!(tile => tile.is_target_tile).to_list[0]) {
+                wnd.push(Event.Type.Quit);
+                writeln("You've won!");
+            }
+			else if (player.pos.x.not!is_contained_in (tmap[].limit!0) // TODO vec contained in orthotope
+				|| player.pos.y.not!is_contained_in (tmap[].limit!1)
+			) {
+				wnd.push(Event.Type.Quit);
+				writeln("You've lost!");
 			}
+			else ground_contact = tmap[player.pos.x.to!int, player.pos.y.to!int + 1].sprite !is null;
 
-			if (!ground_contact)
-				player.move(0, GRAVITY);
-            
             while (wnd.poll(&event)) {
                 switch (event.type) {
                     case Event.Type.Quit:
@@ -303,24 +306,16 @@ void main()
                 }
             }
 
-            if (tmap.point_query (player.getPosition()).fmap!(tile => tile.is_target_tile).to_list[0]) {
-                wnd.push(Event.Type.Quit);
-                writeln("You've won!");
-            } else {
-                const Vector2f pos = player.getPosition();
-                if (pos.x > (MAP_WIDTH * TILE_SIZE) ||
-                    pos.x < 0 ||
-                    pos.y > (MAP_HEIGHT * TILE_SIZE) ||
-                    pos.y < 0)
-                {
-                    writeln("You've lost!");
-                    wnd.push(Event.Type.Quit);
-                }
-            }
+			auto center (T)(Interval!(T,T) ival)
+			{
+				return ival.left + ival.width/2f;
+			}
+
+			if (!ground_contact)
+				player.move(0, GRAVITY);
         }
 
         wnd.draw(fps);
-        wnd.draw(pos_txt);
 
         tmap[].lexi.filter!(tile => tile.sprite !is null).each!(tile => wnd.draw (tile.sprite));
 
