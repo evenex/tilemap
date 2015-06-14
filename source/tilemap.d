@@ -8,12 +8,6 @@ private {// imports
 public {// tilemap
 	alias not = evx.meta.not;
 
-	auto ref each (alias f, R)(auto ref R range)
-	{
-		foreach (ref item; range)
-			f (item);
-	}
-
 	alias fvec = Vector!(2, float);
 	alias ivec = Vector!(2, int);
 
@@ -22,7 +16,8 @@ public {// tilemap
 	{
 		Store data;
 
-		auto limit (uint i)() const
+		auto limit (uint i)() const // TODO need to be able to choose between defining length or limit, let the other be resolved to global, but avoid mutual recursion
+		// REVIEW most spaces will have (0,size_t) limits, might as well let them define multidimensional length -- however retrofitting autodata with this could be a huge pain in the ass
 		{
 			return data.limit!i.fmap!(to!int);
 		}
@@ -71,13 +66,32 @@ public {// tilemap
 		).fmap!(to!int);
 	}
 
-	auto neighborhood (T)(ref TileMap!T tiles, fvec pos, float radius)
+	auto neighborhood (T)(ref TileMap!T tiles, ivec pos, int radius)
 	{
-		ivec max = (pos + radius + 1).clamp_to (tiles),
-			min = (pos - radius).clamp_to (tiles);
+		/*
+			REVIEW
+			rad == 1 => [
+				[(-1,-1), (0,-1), (1,-1)],
+				[(-1, 0), (0, 0), (1, 0)],
+				[(-1, 1), (0, 1), (1, 1)],
+			]
 
-		return map!fvec (orthotope (tiles.limit!0, tiles.limit!1))
-			.zip (tiles[])[min.x..max.x, min.y..max.y];
+			rad == 2 => [
+				[(-2,-2), (-1,-2), (0,-2), (1,-2), (2,-2)],
+				[(-2,-1), (-1,-1), (0,-1), (1,-1), (2,-1)],
+				[(-2, 0), (-1, 0), (0, 0), (1, 0), (2, 0)],
+				[(-2, 1), (-1, 1), (0, 1), (1, 1), (2, 1)],
+				[(-2, 2), (-1, 2), (0, 2), (1, 2), (2, 2)],
+			]
+		*/
+		alias r = radius;
+
+		ivec max = (pos + r + 1f).clamp_to (tiles),
+			min = (pos - r + 0f).clamp_to (tiles);
+
+		return ortho (interval (-r,r+1), interval (-r,r+1))
+			.map!((x,y) => tuple (ivec(x,y), tiles[pos.x + x, pos.y + y]))
+			;
 	}
 
 	auto box_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float width)
@@ -172,6 +186,14 @@ public {// to library
 	{
 		return Throttle!f (ticks_per_frame);
 	}
+
+	auto ref each (alias f, R)(auto ref R range)
+	{
+		foreach (ref item; range)
+			cast(void) f (item);
+
+		return range;
+	}
 }
 public {// dgame demo
 	import std.stdio;
@@ -201,28 +223,35 @@ public {// dgame demo
 		bool is_target_tile;
 
 		enum Mask : ubyte {
-			Ground = 0x0,
-			Edge = 0x1,
-			Grass = 0x2,
-			Snow = 0x4,
-			Ice = 0x8,
-			Lava = 0x10,
-			Spikes = 0x20,
-			Brittle = 0x40,
+			Ground = 	2^^0,
+			Edge = 		2^^1,
+			Grass = 	2^^2,
+			Snow = 		2^^3,
+			Ice = 		2^^4,
+			Lava = 		2^^5,
+			Spikes = 	2^^6,
+			Brittle = 	2^^7,
 		}
 
 		Mask mask;
 	}
 	float melt_rate (ref Tile tile)
 	{
-		immutable float[Tile.Mask] melt_rates = [ // REVIEW make sure this doesn't allocate on each invocation, else we will move it back out
+		float[size_t] melt_rates = [ // REVIEW make sure this doesn't allocate on each invocation, else we will move it back out or turn it into a dense CT Cons
 			Tile.Mask.Lava: ubyte.max, // instant
 			Tile.Mask.Grass: 10,
 			Tile.Mask.Snow: -10,
 			Tile.Mask.Ice: -25,
 		];
 
-		return melt_rates[tile.mask];
+		float rate (size_t i)
+		{
+			if (auto rate = (tile.mask & 2^^i) in melt_rates)
+				return *rate;
+			else return 0;
+		}
+
+		return Nat[0..(Cons!(__traits(allMembers, Tile.Mask)).length)].map!rate.sum;
 	}
 
 	void main () 
@@ -249,7 +278,7 @@ public {// dgame demo
 			.laminate (MAP_WIDTH, MAP_HEIGHT) // REVIEW alternatively, stitch 1D array of rows into 2D array of elements (string[] -> Array!(2, char))
 			.zip (map!Vector2f (Nat[0..MAP_WIDTH].by (Nat[0..MAP_HEIGHT]))) // REVIEW alternatively, zipwith indices, map fprod(identity, fvec)
 			.map!((char c, Vector2f pos)
-				{
+				{// assign tile
 					auto dims () {return pos * TILE_SIZE;}
 
 					if (c == 't')
@@ -258,8 +287,8 @@ public {// dgame demo
 						return Tile (null, pos, true, false);
 					else if (c == 'z')
 						return Tile (null, pos, false, true);
-
-					return Tile.init;
+					else 
+						return Tile (null, pos); 
 				}
 			)
 			.array
@@ -400,13 +429,17 @@ public {// dgame demo
 			wnd.display();
 		}
 
-		throttle!(() => (
+		//TEMP
+		version (none)
+			tiles.neighborhood (player.pos.fmap!(to!int), 1).map!((a,b)=>b.melt_rate).lexi.writeln; // BUG neighborhood needs boundary conditions if we go out of bounds
+		else tiles.neighborhood (ivec(5,5), 1).map!((a,b)=>b.melt_rate).lexi.writeln;
+
+		TICKS_PER_FRAME.throttle!(() => (
 			respond_to_events,
 			update_fps_meter,
 			update_game_state,
 			draw,
 			running
-		))(TICKS_PER_FRAME)
-			.reduce!((_,x)=>x);
+		)).each!(_=>_);
 	}
 }
