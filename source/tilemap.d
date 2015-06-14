@@ -150,6 +150,29 @@ public {// tilemap
 		assert (testiles.circle_query (0.0.fvec, c/2) == [0,1,4]);
 	}
 }
+public {// to library
+	struct Throttle (alias f)
+	{
+		uint ticks_per_frame;
+
+		StopWatch stopwatch;
+		bool empty;
+
+		alias front = not!empty;
+		void popFront ()
+		{
+			if (stopwatch.getElapsedTicks() > ticks_per_frame)
+			{
+				stopwatch.reset();
+				empty = not (f());
+			}
+		}
+	}
+	auto throttle (alias f)(uint ticks_per_frame)
+	{
+		return Throttle!f (ticks_per_frame);
+	}
+}
 public {// dgame demo
 	import std.stdio;
 	import std.array: cache = array;
@@ -180,7 +203,7 @@ public {// dgame demo
 		enum Mask : ubyte {
 			Ground = 0x0,
 			Edge = 0x1,
-			Gras = 0x2,
+			Grass = 0x2,
 			Snow = 0x4,
 			Ice = 0x8,
 			Lava = 0x10,
@@ -194,7 +217,7 @@ public {// dgame demo
 	{
 		immutable float[Tile.Mask] melt_rates = [ // REVIEW make sure this doesn't allocate on each invocation, else we will move it back out
 			Tile.Mask.Lava: ubyte.max, // instant
-			Tile.Mask.Gras: 10,
+			Tile.Mask.Grass: 10,
 			Tile.Mask.Snow: -10,
 			Tile.Mask.Ice: -25,
 		];
@@ -385,27 +408,5 @@ public {// dgame demo
 			running
 		))(TICKS_PER_FRAME)
 			.reduce!((_,x)=>x);
-	}
-
-	struct Throttle (alias f)
-	{
-		uint ticks_per_frame;
-
-		StopWatch stopwatch;
-		bool empty;
-
-		alias front = not!empty;
-		void popFront ()
-		{
-			if (stopwatch.getElapsedTicks() > ticks_per_frame)
-			{
-				stopwatch.reset();
-				empty = not (f());
-			}
-		}
-	}
-	auto throttle (alias f)(uint ticks_per_frame)
-	{
-		return Throttle!f (ticks_per_frame);
 	}
 }
