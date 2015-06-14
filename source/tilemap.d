@@ -1,9 +1,12 @@
 private {
 	import autodata;
+	import evx.meta;
 	import evx.interval;
 	import std.functional;
 	import std.math;
 }
+
+alias not = evx.meta.not;
 
 version = b;
 
@@ -125,29 +128,29 @@ Maybe!(ElementType!T) point_query (T)(ref TileMap!T tiles, fvec pos)
 version (a)
 void main ()
 {
-	TileMap!(Array!(int, 2)) testmap;
+	TileMap!(Array!(int, 2)) testiles;
 
 	/*
 		we test with a 4x4 grid of unique integers
 	*/
-	testmap.data = [0,1,2,3].by ([0,1,2,3]).map!((a,b) => a + 4*b);
+	testiles.data = [0,1,2,3].by ([0,1,2,3]).map!((a,b) => a + 4*b);
 
 	/*
 		for box query we use side length, for circles we use radius
 	*/
 	auto a = 1.8;
-	assert (testmap.box_query (0.fvec, a, a) == [0]);
-	assert (testmap.circle_query (0.fvec, a/2) == [0]);
+	assert (testiles.box_query (0.fvec, a, a) == [0]);
+	assert (testiles.circle_query (0.fvec, a/2) == [0]);
 
 	auto b = 1.59999;
-	assert (testmap.box_query (1.2.fvec, b, b) == [0,1,4,5]);
-	assert (testmap.circle_query (1.2.fvec, b/2) == [0,1,4,5]);
+	assert (testiles.box_query (1.2.fvec, b, b) == [0,1,4,5]);
+	assert (testiles.circle_query (1.2.fvec, b/2) == [0,1,4,5]);
 
 	/* if the circle is set just right, it will intersect 3 tiles (where an equivalent box query would give 4)
 	*/
 	auto c = 2.0;
-	assert (testmap.box_query (0.0.fvec, c, c) == [0,1,4,5]);
-	assert (testmap.circle_query (0.0.fvec, c/2) == [0,1,4]);
+	assert (testiles.box_query (0.0.fvec, c, c) == [0,1,4,5]);
+	assert (testiles.circle_query (0.0.fvec, c/2) == [0,1,4]);
 }
 
 import std.stdio;
@@ -162,9 +165,8 @@ enum ubyte MAP_WIDTH = 12;
 enum ubyte MAP_HEIGHT = 10;
 
 enum ubyte TILE_SIZE = 32;
-enum ubyte MOVE = TILE_SIZE;
 enum ubyte ROTATION = 90;
-enum ubyte GRAVITY = TILE_SIZE / 4;
+alias GRAVITY = Cons!(0, 0.25);
 
 enum ubyte MAX_FPS = 60;
 enum ubyte TICKS_PER_FRAME = 1000 / MAX_FPS;
@@ -202,7 +204,7 @@ void main()
 		return Tile.init;
     }
 
-	auto tmap = tilemap (
+	auto tiles = tilemap (
 		[
 			'0', 'a', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
 			'0', 't', 't', 't', 't', 't', '0', '0', 't', 't', 't', '0',
@@ -223,104 +225,178 @@ void main()
 
 	struct Player
 	{
+		void move (float x, float y)
+		{
+			pos = Vector2f(pos.x + x, pos.y + y);
+		}
+
+		void rotate (float rad)
+		{
+			spritesheet.rotate (rad);
+		}
+		auto rotation ()
+		{
+			return spritesheet.getRotation();
+		}
+
 		fvec pos ()
 		{
-			return spritesheet.getPosition().tupleof.fvec/MOVE;
+			return spritesheet.getPosition().tupleof.fvec/TILE_SIZE;
 		}
-		void pos (Vector2f pos)
+		ref Player pos (Vector2f pos)
 		{
-			spritesheet.setPosition(pos*MOVE);
+			spritesheet.setPosition (pos*TILE_SIZE);
+
+			return this;
 		}
+
+		ref Player rotation_center (fvec v)
+		{
+			spritesheet.setRotationCenter(v.x, v.y);
+
+			return this;
+		}
+
+		bool is_grounded ()
+		{
+			return not (
+				pos.x.to!int.not!is_contained_in (tiles[].limit!0) // TODO vec contained in orthotope
+				|| (pos.y.to!int + 1).not!is_contained_in (tiles[].limit!1)
+				|| tiles[pos.x.to!int, pos.y.to!int + 1].sprite is null
+			);
+		}
+
 		Spritesheet spritesheet;
-		alias spritesheet this;
 	}
- 	auto player = Player (new Spritesheet(player_tex, Rect(0, 0, 32, 32)));
+
+ 	auto player = Player (new Spritesheet(player_tex, Rect(0, 0, 32, 32)))
+		.pos (tiles[].lexi.filter!(t => t.is_start_tile).front.pos)
+		.rotation_center (16.fvec)
+		;
     
-    player.pos = tmap[].lexi.filter!(t => t.is_start_tile).front.pos;
-    player.setRotationCenter(16, 16);
 
     Font fnt = Font((path)~"samples/font/arial.ttf", 12);
     Text fps = new Text(fnt);
 	fps.setPosition(MAP_WIDTH * TILE_SIZE - 96, 4);
 
-    StopWatch sw;
-    StopWatch sw_fps;
-
     bool running = true;
 
-    Event event;
-    while (running) {
-        wnd.clear();
-
-        fps.format("FPS: %d", sw_fps.getCurrentFPS());
-
-        if (sw.getElapsedTicks() > TICKS_PER_FRAME) {
-            sw.reset();
-
-			bool ground_contact;
-
-            if (tmap.point_query (player.pos).fmap!(tile => tile.is_target_tile).to_list[0]) {
-                wnd.push(Event.Type.Quit);
-                writeln("You've won!");
-            }
-			else if (player.pos.x.not!is_contained_in (tmap[].limit!0) // TODO vec contained in orthotope
-				|| player.pos.y.not!is_contained_in (tmap[].limit!1)
-			) {
-				wnd.push(Event.Type.Quit);
-				writeln("You've lost!");
-			}
-			else ground_contact = tmap[player.pos.x.to!int, player.pos.y.to!int + 1].sprite !is null;
-
-            while (wnd.poll(&event)) {
-                switch (event.type) {
-                    case Event.Type.Quit:
-                        writeln("Quit Event");
-                        running = false;
-                    break;
-                        
-                    case Event.Type.KeyDown:
-                        writeln("Pressed key ", event.keyboard.key);
-                        
-                        if (event.keyboard.key == Keyboard.Key.Esc)
-                            running = false;
-                        else if (ground_contact) {
-                            switch (event.keyboard.key) {
-                                case Keyboard.Key.Left:
-                                    player.move(MOVE * -1, 0);
-                                    player.rotate(ROTATION * -1);
-                                    writeln(player.getRotation());
-                                    player.selectFrame(0);
-                                break;
-                                case Keyboard.Key.Right:
-                                    player.move(MOVE, 0);
-                                    player.rotate(ROTATION);
-                                    writeln(player.getRotation());
-                                    player.selectFrame(1);
-                                break;
-                                default: break;
-                            }
-                        }
-                    break;
-                        
-                    default: break;
-                }
-            }
-
-			auto center (T)(Interval!(T,T) ival)
+	void delegate()[Keyboard.Key] key_bindings = [
+		Keyboard.Key.Left: () {
+		//	if (ground_contact)
 			{
-				return ival.left + ival.width/2f;
+				player.move(-1, 0);
+				player.rotate(ROTATION * -1);
+				writeln(player.rotation);
+				player.spritesheet.selectFrame(0);
 			}
+		},
+		Keyboard.Key.Right: () {
+			player.move(1, 0);
+			player.rotate(ROTATION);
+			writeln(player.rotation);
+			player.spritesheet.selectFrame(1);
+		},
+		Keyboard.Key.Esc: () {
+				running = false;
+		}
+	];
 
-			if (!ground_contact)
-				player.move(0, GRAVITY);
-        }
+	void delegate(ref Event)[Event.Type] event_responses = [
+		Event.Type.Quit: (ref Event event) {
+			writeln("Quit Event");
+			running = false;
+		},
+		Event.Type.KeyDown: (ref Event event) {
+			writeln("Pressed key ", event.keyboard.key);
+			
+			if (auto movement = event.keyboard.key in key_bindings)
+				(*movement)();
+		}
+	];
 
-        wnd.draw(fps);
+	void respond_to_events () 
+	{
+		static Event event;
 
-        tmap[].lexi.filter!(tile => tile.sprite !is null).each!(tile => wnd.draw (tile.sprite));
+		while (wnd.poll(&event))
+			if (auto response_to = event.type in event_responses)
+				(*response_to)(event);
+	}
+	void update_fps_meter ()
+	{
+		static StopWatch sw_fps;
 
-        wnd.draw(player);
+		fps.format("FPS: %d", sw_fps.getCurrentFPS());
+	}
+	void update_game_state ()
+	{
+		if (tiles.point_query (player.pos).fmap!(tile => tile.is_target_tile).to_list[0]) {
+			wnd.push(Event.Type.Quit);
+			writeln("You've won!");
+		}
+		else if (player.pos.x.not!is_contained_in (tiles[].limit!0) // TODO vec contained in orthotope
+			|| player.pos.y.not!is_contained_in (tiles[].limit!1)
+		) {
+			wnd.push(Event.Type.Quit);
+			writeln("You've lost!");
+		}
 
-        wnd.display();
-    }
+		auto center (T)(Interval!(T,T) ival)
+		{
+			return ival.left + ival.width/2f;
+		}
+
+		if (not (player.is_grounded))
+			player.move(GRAVITY);
+	}
+	void draw ()
+	{
+		wnd.clear();
+
+		wnd.draw(fps);
+
+		tiles[].lexi.filter!(tile => tile.sprite !is null)
+			.each!(tile => wnd.draw (tile.sprite));
+
+		wnd.draw(player.spritesheet);
+
+		wnd.display();
+	}
+
+	throttle!(() => (
+		respond_to_events,
+		update_fps_meter,
+		update_game_state,
+		draw,
+		running
+	))(TICKS_PER_FRAME)
+		.reduce!((_,x)=>x);
+}
+
+struct Throttle (alias f)
+{
+	uint ticks_per_frame;
+
+	StopWatch stopwatch;
+    bool running = true;
+
+	alias front = running;
+
+	void popFront ()
+	{
+		if (stopwatch.getElapsedTicks() > ticks_per_frame)
+		{
+			stopwatch.reset();
+			front = f();
+		}
+	}
+	bool empty ()
+	{
+		return not!running;
+	}
+}
+auto throttle (alias f)(uint ticks_per_frame)
+{
+	return Throttle!f (ticks_per_frame);
 }
