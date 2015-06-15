@@ -2,6 +2,7 @@ private {// imports
 	import autodata;
 	import evx.meta;
 	import evx.interval;
+	import evx.infinity;
 	import std.functional;
 	import std.math;
 }
@@ -61,12 +62,12 @@ public {// tilemap
 	private auto clamp_to (T)(fvec v, ref TileMap!T tiles)
 	{
 		return vector (
-			v.x.clamp (interval (0, tiles.width)),
-			v.y.clamp (interval (0, tiles.height))
+			v.x.clamp (interval (0, tiles.width-1)),
+			v.y.clamp (interval (0, tiles.height-1))
 		).fmap!(to!int);
 	}
 
-	auto neighborhood (T)(ref TileMap!T tiles, ivec pos, int radius)
+	auto neighborhood (alias boundary = _ => ElementType!T.init, T)(ref TileMap!T tiles, ivec pos, int radius)
 	{
 		/*
 			REVIEW
@@ -86,12 +87,21 @@ public {// tilemap
 		*/
 		alias r = radius;
 
-		ivec max = (pos + r + 1f).clamp_to (tiles),
-			min = (pos - r + 0f).clamp_to (tiles);
+		ivec max = (pos + r).fmap!(to!float).clamp_to (tiles) + 1,
+			min = (pos - r).fmap!(to!float).clamp_to (tiles);
+
+		alias offset = Cons!(() => -r, () => r+1);
+
+
+		auto in_bounds (uint i)()
+			{return (pos[i] + offset[i]).is_contained_in (tiles[].limit!i);}
 
 		return ortho (interval (-r,r+1), interval (-r,r+1))
-			.map!((x,y) => tuple (ivec(x,y), tiles[pos.x + x, pos.y + y]))
-			;
+			.map!((x,y,s) => s[pos.x + x, pos.y + y])(
+				ortho (interval (-infinity!int, infinity), interval (-infinity!int, infinity))
+					.map!boundary
+					.embed (tiles[])
+			);
 	}
 
 	auto box_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float width)
@@ -102,7 +112,7 @@ public {// tilemap
 	{
 		auto dims = vector (width, height)/2;
 
-		ivec max = (pos + dims + 1).clamp_to (tiles),
+		ivec max = (pos + dims).clamp_to (tiles) + 1,
 			min = (pos - dims).clamp_to (tiles);
 
 		return tiles[min.x..max.x, min.y..max.y].lexi.filter!condition;
@@ -118,7 +128,7 @@ public {// tilemap
 				.fmap!(a => a^^2)[].sum <= radius^^2;
 		}
 
-		return tiles.neighborhood (pos, radius)
+		return tiles.neighborhood (pos, radius) // REVIEW
 			.lexi.filter!((coord,_) => intersects (coord))
 			.map!((_,tile) => tile)
 			.filter!condition;
@@ -127,11 +137,7 @@ public {// tilemap
 	{
 		auto ipos = pos.fmap!(to!int);
 
-		if (
-			ipos.x.is_contained_in (tiles[].limit!0)  // REVIEW vec in orthotope
-			&& ipos.y.is_contained_in (tiles[].limit!1)
-		)
-
+		if (ipos in tiles[].orthotope)
 			return typeof(return)(tiles[ipos.x, ipos.y]);
 		else
 			return typeof(return)(null);
@@ -165,6 +171,9 @@ public {// tilemap
 	}
 }
 public {// to library
+	import core.time;
+	import core.thread;
+
 	struct Throttle (alias f)
 	{
 		uint ticks_per_frame;
@@ -172,7 +181,17 @@ public {// to library
 		StopWatch stopwatch;
 		bool empty;
 
-		alias front = not!empty;
+		auto remaining_ticks_in_frame ()
+		{
+			auto remaining = ticks_per_frame - stopwatch.getElapsedTicks();
+
+			if (remaining < ticks_per_frame)
+			 	return remaining.msecs;
+			else
+				return 0.msecs;
+		}
+
+		alias front = remaining_ticks_in_frame;
 		void popFront ()
 		{
 			if (stopwatch.getElapsedTicks() > ticks_per_frame)
@@ -197,7 +216,6 @@ public {// to library
 }
 public {// dgame demo
 	import std.stdio;
-	import std.array: cache = array;
 
 	import Dgame.Window;
 	import Dgame.Graphic;
@@ -217,12 +235,10 @@ public {// dgame demo
 	struct Tile 
 	{
 		Sprite sprite;
-		Vector2f pos;
-
-		bool is_start_tile; // REVIEW this sucks
-		bool is_target_tile;
+		fvec pos;
 
 		enum Mask : ubyte {
+			Air =		0,
 			Ground = 	2^^0,
 			Edge = 		2^^1,
 			Grass = 	2^^2,
@@ -254,6 +270,43 @@ public {// dgame demo
 		return Nat[0..(Cons!(__traits(allMembers, Tile.Mask)).length)].map!rate.sum;
 	}
 
+	struct Player
+	{
+		void move (float x, float y)
+		{
+			pos = fvec(pos.x + x, pos.y + y);
+		}
+
+		void rotate (float rad)
+		{
+			spritesheet.rotate (rad);
+		}
+		auto rotation ()
+		{
+			return spritesheet.getRotation();
+		}
+
+		fvec pos ()
+		{
+			return spritesheet.getPosition().tupleof.fvec/TILE_SIZE;
+		}
+		ref Player pos (fvec pos)
+		{
+			spritesheet.setPosition (Vector2f((pos * TILE_SIZE).tuple.expand));
+
+			return this;
+		}
+
+		ref Player rotation_center (fvec v)
+		{
+			spritesheet.setRotationCenter(v.x, v.y);
+
+			return this;
+		}
+
+		Spritesheet spritesheet;
+	}
+
 	void main () 
 	{
 		Window wnd = Window(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE, "Dgame Test");
@@ -262,6 +315,8 @@ public {// dgame demo
 
 		Texture player_tex = Texture(Surface((path)~"Basti-Box.png"));
 		Texture tile_tex = Texture(Surface((path)~"Tile.png"));
+
+		fvec start_pos, target_pos;
 
 		// 0 = empty, a = start, t = (walkable) tile, b = brittle tile, z = target
 		auto tiles = tilemap (
@@ -276,17 +331,18 @@ public {// dgame demo
 			`           z`
 			`   ttttttttt`
 			.laminate (MAP_WIDTH, MAP_HEIGHT) // REVIEW alternatively, stitch 1D array of rows into 2D array of elements (string[] -> Array!(2, char))
-			.zip (map!Vector2f (Nat[0..MAP_WIDTH].by (Nat[0..MAP_HEIGHT]))) // REVIEW alternatively, zipwith indices, map fprod(identity, fvec)
-			.map!((char c, Vector2f pos)
+			.zip (map!fvec (Nat[0..MAP_WIDTH].by (Nat[0..MAP_HEIGHT]))) // REVIEW alternatively, zipwith indices, map fprod(identity, fvec)
+			.map!((char c, fvec pos)
 				{// assign tile
 					auto dims () {return pos * TILE_SIZE;}
 
+					// REVIEW telescoping ctors
 					if (c == 't')
-						return Tile (new Sprite(tile_tex, dims), pos);
+						return Tile (new Sprite(tile_tex, Vector2f (dims.tuple.expand)), pos, Tile.Mask.Ground);
 					else if (c == 'a')
-						return Tile (null, pos, true, false);
+						return Tile (null, start_pos = pos);
 					else if (c == 'z')
-						return Tile (null, pos, false, true);
+						return Tile (null, target_pos = pos);
 					else 
 						return Tile (null, pos); 
 				}
@@ -294,56 +350,20 @@ public {// dgame demo
 			.array
 		);
 
-		struct Player
-		{
-			void move (float x, float y)
-			{
-				pos = Vector2f(pos.x + x, pos.y + y);
-			}
-
-			void rotate (float rad)
-			{
-				spritesheet.rotate (rad);
-			}
-			auto rotation ()
-			{
-				return spritesheet.getRotation();
-			}
-
-			fvec pos ()
-			{
-				return spritesheet.getPosition().tupleof.fvec/TILE_SIZE;
-			}
-			ref Player pos (Vector2f pos)
-			{
-				spritesheet.setPosition (pos*TILE_SIZE);
-
-				return this;
-			}
-
-			ref Player rotation_center (fvec v)
-			{
-				spritesheet.setRotationCenter(v.x, v.y);
-
-				return this;
-			}
-
-			bool is_grounded ()
-			{
-				return not (
-					pos.x.to!int.not!is_contained_in (tiles[].limit!0) // TODO vec contained in orthotope
-					|| (pos.y.to!int + 1).not!is_contained_in (tiles[].limit!1)
-					|| tiles[pos.x.to!int, pos.y.to!int + 1].sprite is null
-				);
-			}
-
-			Spritesheet spritesheet;
-		}
-
 		auto player = Player (new Spritesheet(player_tex, Rect(0, 0, 32, 32)))
-			.pos (tiles[].lexi.filter!(t => t.is_start_tile).front.pos)
+			.pos (start_pos)
 			.rotation_center (16.fvec)
 			;
+		bool player_in_air ()
+		{
+			return tiles[
+				(player.pos + fvec(0,1))
+					.clamp_to (tiles)
+					.tuple.expand
+			].mask == Tile.Mask.Air?
+				true : false
+				;
+		}
 		
 		Font fnt = Font((path)~"samples/font/arial.ttf", 12);
 		Text fps = new Text(fnt);
@@ -353,19 +373,20 @@ public {// dgame demo
 
 		void delegate()[Keyboard.Key] key_bindings = [
 			Keyboard.Key.Left: () {
-				if (player.is_grounded)
+				if (not!player_in_air)
 				{
 					player.move(-1, 0);
 					player.rotate(ROTATION * -1);
-					writeln(player.rotation);
 					player.spritesheet.selectFrame(0);
 				}
 			},
 			Keyboard.Key.Right: () {
-				player.move(1, 0);
-				player.rotate(ROTATION);
-				writeln(player.rotation);
-				player.spritesheet.selectFrame(1);
+				if (not!player_in_air)
+				{
+					player.move(1, 0);
+					player.rotate(ROTATION);
+					player.spritesheet.selectFrame(1);
+				}
 			},
 			Keyboard.Key.Esc: () {
 				wnd.push(Event.Type.Quit);
@@ -374,18 +395,31 @@ public {// dgame demo
 
 		void delegate(ref Event)[Event.Type] event_responses = [
 			Event.Type.Quit: (ref Event event) {
-				writeln("Quit Event");
 				running = false;
 			},
 			Event.Type.KeyDown: (ref Event event) {
-				writeln("Pressed key ", event.keyboard.key);
-				
 				if (auto movement = event.keyboard.key in key_bindings)
 					(*movement)();
 			}
 		];
 
-		void respond_to_events () 
+		void update_game_state ()
+		{
+			if (player.pos == target_pos)
+			{
+				writeln (`You've won!`);
+				wnd.push(Event.Type.Quit);
+			}
+			else if (player.pos !in tiles[].orthotope)
+			{
+				writeln (`You've lost!`);
+				wnd.push(Event.Type.Quit);
+			}
+
+			if (player_in_air)
+				player.move (GRAVITY);
+		}
+		void respond_to_events ()
 		{
 			static Event event;
 
@@ -393,27 +427,11 @@ public {// dgame demo
 				if (auto response_to = event.type in event_responses)
 					(*response_to)(event);
 		}
-		void update_fps_meter ()
+		void update_fps_meter () // allocates (string appender)
 		{
 			static StopWatch sw_fps;
 
 			fps.format("FPS: %d", sw_fps.getCurrentFPS());
-		}
-		void update_game_state ()
-		{
-			if (tiles.point_query (player.pos).fmap!(tile => tile.is_target_tile).to_list[0]) {
-				wnd.push(Event.Type.Quit);
-				writeln("You've won!");
-			}
-			else if (player.pos.x.not!is_contained_in (tiles[].limit!0) // TODO vec contained in orthotope
-				|| player.pos.y.not!is_contained_in (tiles[].limit!1)
-			) {
-				wnd.push(Event.Type.Quit);
-				writeln("You've lost!");
-			}
-
-			if (not (player.is_grounded))
-				player.move(GRAVITY);
 		}
 		void draw ()
 		{
@@ -428,18 +446,21 @@ public {// dgame demo
 
 			wnd.display();
 		}
-
-		//TEMP
-		version (none)
-			tiles.neighborhood (player.pos.fmap!(to!int), 1).map!((a,b)=>b.melt_rate).lexi.writeln; // BUG neighborhood needs boundary conditions if we go out of bounds
-		else tiles.neighborhood (ivec(5,5), 1).map!((a,b)=>b.melt_rate).lexi.writeln;
+		void log () // allocates (writeln)
+		{
+			tiles.neighborhood!((i,j) => Tile (null, fvec(i,j)))
+				(player.pos.fmap!(to!int), 1)
+				.lexi.writeln;
+		}
 
 		TICKS_PER_FRAME.throttle!(() => (
-			respond_to_events,
-			update_fps_meter,
-			update_game_state,
-			draw,
+			1? update_game_state 	: {},
+			1? respond_to_events 	: {},
+			1? update_fps_meter 	: {},
+			1? draw					: {},
+			0? log 					: {},
 			running
-		)).each!(_=>_);
+		)).each!(Thread.sleep);
 	}
 }
+pragma(msg, 1f - 3678f/4390);
