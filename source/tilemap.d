@@ -192,13 +192,9 @@ public {// to library
 		alias infinite = Repeat!(n, interval (-infinity!T, infinity!T));
 		alias stencil = Repeat!(n, diameter);
 
-		return infinite.orthotope
-			.map!((_,o) => o)(origin)
-			.zip_trunc (
-				stencil.orthotope
-					.map!(typeof(origin))
-			)
-			.map!sum
+		return stencil.orthotope
+			.map!(typeof(origin))
+			.map!sum (origin)
 			.map!index_into (
 				space.embedded_in (
 					infinite.orthotope
