@@ -178,7 +178,7 @@ public {// to library
 		return V(Map!(clamp_axis, Iota!(dimensionality!S)));
 	}
 
-	auto neighborhood (alias boundary_condition = _ => ElementType!S.init, S, T, uint n)(ref S space, Vector!(n,T) origin, T radius) // REVIEW this arg for a boundary condition... kinda awkward
+	auto neighborhood (alias boundary_condition = _ => ElementType!S.init, S, T, uint n)(S space, Vector!(n,T) origin, T radius) // REVIEW this arg for a boundary condition... kinda awkward
 	{
 		alias r = radius;
 
@@ -193,6 +193,7 @@ public {// to library
 		alias stencil = Repeat!(n, diameter);
 
 		return infinite.orthotope
+			.map!((_,o) => o)(origin)
 			.zip_trunc (
 				stencil.orthotope
 					.map!(typeof(origin))
@@ -441,17 +442,17 @@ public {// dgame demo
 		}
 		void log () // allocates (writeln)
 		{
-			tiles.neighborhood!((i,j) => Tile (null, fvec(i,j)))
+			tiles[].neighborhood!((i,j) => Tile (null, fvec(i,j)))
 				(player.pos.fmap!(to!int), 1)
 				.lexi.writeln;
 		}
 
 		TICKS_PER_FRAME.throttle!(() => (
-			1? update_game_state 	: {},
-			1? respond_to_events 	: {},
-			1? update_fps_meter 	: {},
-			1? draw					: {},
-			0? log 					: {},
+			1? update_game_state : {},
+			1? respond_to_events : {},
+			1? update_fps_meter  : {},
+			1? draw              : {},
+			0? log               : {},
 			running
 		)).each!(Thread.sleep);
 	}
