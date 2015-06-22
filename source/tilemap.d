@@ -6,6 +6,7 @@ private {// imports
 	import evx.infinity;
 	import std.functional;
 	import std.math;
+	import std.traits : EnumMembers;
 }
 public {// tilemap
 	alias not = evx.meta.not;
@@ -13,7 +14,7 @@ public {// tilemap
 	alias fvec = Vector!(2, float);
 	alias ivec = Vector!(2, int);
 
-	struct TileMap (Store)
+	struct TileMap (Store) // REVIEW do we eventually want to turn this into a spatial wrapper over rcorre's tilemap? it would enable loading from xml, and this thing is already nothing but a thin wrapper over an array
 	if (dimensionality!Store == 2)
 	{
 		Store data;
@@ -60,70 +61,87 @@ public {// tilemap
 		return TileMap!S (space);
 	}
 
-	auto box_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float width)
-	{
-		return box_query!condition (tiles, pos, width, width);
-	}
-	auto box_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float width, float height)
-	{
-		auto dims = vector (width, height)/2;
-
-		ivec max = (pos + dims).clamp_to (tiles) + 1,
-			min = (pos - dims).clamp_to (tiles);
-
-		return tiles[min.x..max.x, min.y..max.y].lexi.filter!condition;
-	}
-	auto circle_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float radius)
-	{
-		auto intersects (fvec v)
+	version (none) {
+		auto cube_query (alias condition =_=> true, S,T, uint n)(ref S space, Vector!(n,T) pos, T width)
 		{
-			return (pos - fvec (
-					pos.x.clamp (interval (v.x, v.x + 1)),
-					pos.y.clamp (interval (v.y, v.y + 1))
-				))
-				.fmap!(a => a^^2)[].sum <= radius^^2;
+			return aabb_query!condition (space, pos, Repeat!(n, width));
+		}
+		auto aabb_query (alias condition =_=> true, S,T, uint n, W...)(ref S space, Vector!(n,T) pos, W widths)
+		if (dimensionality!S == n && W.length == n)
+		{
+			auto dims = vector (width, height)/2;
+
+			ivec max = (pos + dims).clamp_to (space).fmap!(to!T) + 1, // REVIEW redundant fmap
+				min = (pos - dims).clamp_to (space).fmap!(to!T);
+
+			return space[min.x..max.x, min.y..max.y].lexi.filter!condition;
+		}
+		auto sphere_query (alias condition =_=> true, S,T, uint n)(S space, Vector!(n,T) pos, T radius)
+		if (dimensionality!S == n)
+		{
+			auto intersects (fvec v)
+			{
+				return (pos 
+					- zip(pos[], v[])
+						.map!((p,q) => p.clamp (interval (q, q+T(1))))
+						.Vector!(n,T)
+				).fmap!(a => a^^2)[].sum 
+					<= radius^^2
+					;
+			}
+
+			return space[].neighborhood (pos, radius) 
+				.lexi.filter!((coord,_) => intersects (coord))
+				.map!((_,item) => item)
+				.filter!condition;
+		}
+		Maybe!(ElementType!T) point_query (alias condition =_=> true, S,T, uint n)(S space, Vector!(n,T) pos)
+		{
+			if (pos in space[].orthotope)
+				return typeof(return)(space[pos.tuple.expand]);
+			else 
+				return typeof(return)(null);
 		}
 
-		return tiles.neighborhood (pos, radius) // REVIEW
-			.lexi.filter!((coord,_) => intersects (coord))
-			.map!((_,tile) => tile)
-			.filter!condition;
-	}
-	Maybe!(ElementType!T) point_query (T)(ref TileMap!T tiles, fvec pos)
-	{
-		auto ipos = pos.fmap!(to!int);
+		auto box_query (alias condition =_=> true, S,T, uint n)(ref S space, Vector!(n,T) pos, T width)
+		{
+			return box_query!condition (space, pos, width, width);
+		}
+		auto box_query (alias condition =_=> true, S,T, uint n)(ref S space, Vector!(n,T) pos, T width, T height)
+		{
+			return aabb_query!condition (space, pos, width, height);
+		}
+		auto circle_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float radius)
+		{
+			return sphere_query!condition (tiles, pos, radius);
+		}
 
-		if (ipos in tiles[].orthotope)
-			return typeof(return)(tiles[ipos.x, ipos.y]);
-		else
-			return typeof(return)(null);
-	}
+		unittest
+		{
+			TileMap!(Array!(int, 2)) testiles;
 
-	unittest
-	{
-		TileMap!(Array!(int, 2)) testiles;
+			/*
+				we test with a 4x4 grid of unique integers
+			*/
+			testiles.data = [0,1,2,3].by ([0,1,2,3]).map!((a,b) => a + 4*b);
 
-		/*
-			we test with a 4x4 grid of unique integers
-		*/
-		testiles.data = [0,1,2,3].by ([0,1,2,3]).map!((a,b) => a + 4*b);
+			/*
+				for box query we use side length, for circles we use radius
+			*/
+			auto a = 1.8;
+			assert (testiles.box_query (0.fvec, a, a) == [0]);
+			assert (testiles.circle_query (0.fvec, a/2) == [0]);
 
-		/*
-			for box query we use side length, for circles we use radius
-		*/
-		auto a = 1.8;
-		assert (testiles.box_query (0.fvec, a, a) == [0]);
-		assert (testiles.circle_query (0.fvec, a/2) == [0]);
+			auto b = 1.59999;
+			assert (testiles.box_query (1.2.fvec, b, b) == [0,1,4,5]);
+			assert (testiles.circle_query (1.2.fvec, b/2) == [0,1,4,5]);
 
-		auto b = 1.59999;
-		assert (testiles.box_query (1.2.fvec, b, b) == [0,1,4,5]);
-		assert (testiles.circle_query (1.2.fvec, b/2) == [0,1,4,5]);
-
-		/* if the circle is set just right, it will intersect 3 tiles (where an equivalent box query would give 4)
-		*/
-		auto c = 2.0;
-		assert (testiles.box_query (0.0.fvec, c, c) == [0,1,4,5]);
-		assert (testiles.circle_query (0.0.fvec, c/2) == [0,1,4]);
+			/* if the circle is set just right, it will intersect 3 tiles (where an equivalent box query would give 4)
+			*/
+			auto c = 2.0;
+			assert (testiles.box_query (0.0.fvec, c, c) == [0,1,4,5]);
+			assert (testiles.circle_query (0.0.fvec, c/2) == [0,1,4]);
+		}
 	}
 }
 public {// to library
@@ -178,19 +196,19 @@ public {// to library
 		return V(Map!(clamp_axis, Iota!(dimensionality!S)));
 	}
 
-	auto neighborhood (alias boundary_condition = _ => ElementType!S.init, S, T, uint n)(S space, Vector!(n,T) origin, T radius) // REVIEW this arg for a boundary condition... kinda awkward
+	auto neighborhood (alias boundary_condition = _ => ElementType!S.init, S, T, uint n)(S space, Vector!(n,T) origin, T radius)
 	{
 		alias r = radius;
 
 		auto diameter = interval (-r, r+T(1));
 
+		alias infinite = Repeat!(n, interval (-infinity!T, infinity!T));
+		alias stencil = Repeat!(n, diameter);
+
 		static index_into (R)(Vector!(n,T) index, R outer_space)
 		{
 			return outer_space[index.tuple.expand];
 		}
-
-		alias infinite = Repeat!(n, interval (-infinity!T, infinity!T));
-		alias stencil = Repeat!(n, diameter);
 
 		return stencil.orthotope
 			.map!(typeof(origin))
@@ -220,44 +238,6 @@ public {// dgame demo
 
 	enum ubyte MAX_FPS = 60;
 	enum ubyte TICKS_PER_FRAME = 1000 / MAX_FPS;
-
-	struct Tile 
-	{
-		Sprite sprite;
-		fvec pos;
-
-		enum Mask : ubyte {
-			Air =		0,
-			Ground = 	2^^0,
-			Edge = 		2^^1,
-			Grass = 	2^^2,
-			Snow = 		2^^3,
-			Ice = 		2^^4,
-			Lava = 		2^^5,
-			Spikes = 	2^^6,
-			Brittle = 	2^^7,
-		}
-
-		Mask mask;
-	}
-	float melt_rate (ref Tile tile)
-	{
-		float[size_t] melt_rates = [ // REVIEW make sure this doesn't allocate on each invocation, else we will move it back out or turn it into a dense CT Cons
-			Tile.Mask.Lava: ubyte.max, // instant
-			Tile.Mask.Grass: 10,
-			Tile.Mask.Snow: -10,
-			Tile.Mask.Ice: -25,
-		];
-
-		float rate (size_t i)
-		{
-			if (auto rate = (tile.mask & 2^^i) in melt_rates)
-				return *rate;
-			else return 0;
-		}
-
-		return Nat[0..(Cons!(__traits(allMembers, Tile.Mask)).length)].map!rate.sum;
-	}
 
 	struct Player
 	{
@@ -294,6 +274,45 @@ public {// dgame demo
 		}
 
 		Spritesheet spritesheet;
+
+		auto heat = 0f;
+	}
+	struct Tile 
+	{
+		Sprite sprite;
+		fvec pos;
+
+		enum Mask : ubyte {
+			Air =		0,
+			Ground = 	2^^0,
+			Edge = 		2^^1,
+			Grass = 	2^^2,
+			Snow = 		2^^3,
+			Ice = 		2^^4,
+			Lava = 		2^^5,
+			Spikes = 	2^^6,
+			Brittle = 	2^^7,
+		}
+
+		Mask mask;
+	}
+	float melt_rate (ref Tile tile)
+	{
+		float[ubyte] melt_rates = [ // REVIEW make sure this doesn't allocate on each invocation, else we will move it back out or turn it into a dense CT Cons
+			Tile.Mask.Lava: ubyte.max, // instant REVIEW ubyte?
+			Tile.Mask.Grass: 10,
+			Tile.Mask.Snow: -10,
+			Tile.Mask.Ice: -25,
+		];
+
+		float rate (size_t i)()
+		{
+			if (auto rate = (tile.mask & 2^^i) in melt_rates)
+				return *rate;
+			else return 0;
+		}
+
+		return Map!(rate, Ordinal!(EnumMembers!(Tile.Mask))).sum;
 	}
 
 	void main () 
@@ -307,7 +326,8 @@ public {// dgame demo
 
 		fvec start_pos, target_pos;
 
-		// 0 = empty, a = start, t = (walkable) tile, b = brittle tile, z = target
+		// a = start, t = (walkable) tile, b = brittle tile, z = target
+		// REVIEW how to abstract out the level?
 		auto tiles = tilemap (
 			` a          `
 			` ttttt  ttt `
@@ -327,7 +347,7 @@ public {// dgame demo
 
 					// REVIEW telescoping ctors
 					if (c == 't')
-						return Tile (new Sprite(tile_tex, Vector2f (dims.tuple.expand)), pos, Tile.Mask.Ground);
+						return Tile (new Sprite(tile_tex, Vector2f (dims.tuple.expand)), pos, Tile.Mask.Grass);
 					else if (c == 'a')
 						return Tile (null, start_pos = pos);
 					else if (c == 'z')
@@ -343,6 +363,7 @@ public {// dgame demo
 			.pos (start_pos)
 			.rotation_center (16.fvec)
 			;
+
 		bool player_in_air ()
 		{
 			return tiles[
@@ -355,6 +376,7 @@ public {// dgame demo
 				;
 		}
 		
+		// REVIEW how to abstract out fps meter into debug widget
 		Font fnt = Font((path)~"samples/font/arial.ttf", 12);
 		Text fps = new Text(fnt);
 		fps.setPosition(MAP_WIDTH * TILE_SIZE - 96, 4);
@@ -388,13 +410,15 @@ public {// dgame demo
 				running = false;
 			},
 			Event.Type.KeyDown: (ref Event event) {
-				if (auto movement = event.keyboard.key in key_bindings)
-					(*movement)();
+				if (auto action = event.keyboard.key in key_bindings)
+					(*action)();
 			}
 		];
 
 		void update_game_state ()
 		{
+			enum dt = 1f/MAX_FPS;
+
 			if (player.pos == target_pos)
 			{
 				writeln (`You've won!`);
@@ -405,6 +429,13 @@ public {// dgame demo
 				writeln (`You've lost!`);
 				wnd.push(Event.Type.Quit);
 			}
+
+			player.heat += tiles[].neighborhood (
+				player.pos.fmap!(to!int), 1
+			)
+				.map!melt_rate.lexi.sum // REVIEW sum is associative, should it require explicit lexicographic traversal?
+				* dt
+			;
 
 			if (player_in_air)
 				player.move (GRAVITY);
@@ -438,9 +469,15 @@ public {// dgame demo
 		}
 		void log () // allocates (writeln)
 		{
-			tiles[].neighborhood!((i,j) => Tile (null, fvec(i,j)))
-				(player.pos.fmap!(to!int), 1)
-				.lexi.writeln;
+			version (none)
+				tiles[].neighborhood!((i,j) => Tile (null, fvec(i,j)))
+					(player.pos.fmap!(to!int), 1)
+					.lexi.writeln;
+
+			writeln (`heat: `, player.heat);
+
+			version (none) 
+				Nat[0..20].by (Nat[0..20]).neighborhood (vector (0,0), 2).lexi.writeln;
 		}
 
 		TICKS_PER_FRAME.throttle!(() => (
@@ -448,7 +485,7 @@ public {// dgame demo
 			1? respond_to_events : {},
 			1? update_fps_meter  : {},
 			1? draw              : {},
-			0? log               : {},
+			1? log               : {},
 			running
 		)).each!(Thread.sleep);
 	}
