@@ -1,3 +1,4 @@
+// TODO ensure the unittest can run
 private {// imports
 	import autodata;
 	import evx.meta;
@@ -57,51 +58,6 @@ public {// tilemap
 	auto tilemap (S)(S space)
 	{
 		return TileMap!S (space);
-	}
-
-	private auto clamp_to (T)(fvec v, ref TileMap!T tiles)
-	{
-		return vector (
-			v.x.clamp (interval (0, tiles.width-1)),
-			v.y.clamp (interval (0, tiles.height-1))
-		).fmap!(to!int);
-	}
-
-	auto neighborhood (alias boundary = _ => ElementType!T.init, T)(ref TileMap!T tiles, ivec pos, int radius)
-	{
-		/*
-			REVIEW
-			rad == 1 => [
-				[(-1,-1), (0,-1), (1,-1)],
-				[(-1, 0), (0, 0), (1, 0)],
-				[(-1, 1), (0, 1), (1, 1)],
-			]
-
-			rad == 2 => [
-				[(-2,-2), (-1,-2), (0,-2), (1,-2), (2,-2)],
-				[(-2,-1), (-1,-1), (0,-1), (1,-1), (2,-1)],
-				[(-2, 0), (-1, 0), (0, 0), (1, 0), (2, 0)],
-				[(-2, 1), (-1, 1), (0, 1), (1, 1), (2, 1)],
-				[(-2, 2), (-1, 2), (0, 2), (1, 2), (2, 2)],
-			]
-		*/
-		alias r = radius;
-
-		ivec max = (pos + r).fmap!(to!float).clamp_to (tiles) + 1,
-			min = (pos - r).fmap!(to!float).clamp_to (tiles);
-
-		alias offset = Cons!(() => -r, () => r+1);
-
-
-		auto in_bounds (uint i)()
-			{return (pos[i] + offset[i]).is_contained_in (tiles[].limit!i);}
-
-		return ortho (interval (-r,r+1), interval (-r,r+1))
-			.map!((x,y,s) => s[pos.x + x, pos.y + y])(
-				ortho (interval (-infinity!int, infinity), interval (-infinity!int, infinity))
-					.map!boundary
-					.embed (tiles[])
-			);
 	}
 
 	auto box_query (alias condition =_=> true, T)(ref TileMap!T tiles, fvec pos, float width)
@@ -212,6 +168,42 @@ public {// to library
 			cast(void) f (item);
 
 		return range;
+	}
+
+	private auto clamp_to (V,S)(V v, ref S space)
+	{
+		auto clamp_axis (uint i)()
+			{return v[i].clamp (space.limit!i - interval(0,1));}
+
+		return V(Map!(clamp_axis, Iota!(dimensionality!S)));
+	}
+
+	auto neighborhood (alias boundary_condition = _ => ElementType!S.init, S, T, uint n)(ref S space, Vector!(n,T) origin, T radius) // REVIEW this arg for a boundary condition... kinda awkward
+	{
+		alias r = radius;
+
+		auto diameter = interval (-r, r+T(1));
+
+		static index_into (R)(Vector!(n,T) index, R outer_space)
+		{
+			return outer_space[index.tuple.expand];
+		}
+
+		alias infinite = Repeat!(n, interval (-infinity!T, infinity!T));
+		alias stencil = Repeat!(n, diameter);
+
+		return infinite.orthotope
+			.zip_trunc (
+				stencil.orthotope
+					.map!(typeof(origin))
+			)
+			.map!sum
+			.map!index_into (
+				space.embedded_in (
+					infinite.orthotope
+						.map!boundary_condition 
+				)
+			);
 	}
 }
 public {// dgame demo
@@ -358,6 +350,7 @@ public {// dgame demo
 		{
 			return tiles[
 				(player.pos + fvec(0,1))
+					.fmap!(to!int)
 					.clamp_to (tiles)
 					.tuple.expand
 			].mask == Tile.Mask.Air?
@@ -463,4 +456,3 @@ public {// dgame demo
 		)).each!(Thread.sleep);
 	}
 }
-pragma(msg, 1f - 3678f/4390);
