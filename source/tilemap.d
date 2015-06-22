@@ -171,7 +171,7 @@ public {// to library
 			if (stopwatch.getElapsedTicks() > ticks_per_frame)
 			{
 				stopwatch.reset();
-				empty = not (f());
+				empty = not!f;
 			}
 		}
 	}
@@ -261,7 +261,7 @@ public {// dgame demo
 		}
 		ref Player pos (fvec pos)
 		{
-			spritesheet.setPosition (Vector2f((pos * TILE_SIZE).tuple.expand));
+			spritesheet.setPosition ((pos * TILE_SIZE).tuple.expand);
 
 			return this;
 		}
@@ -469,15 +469,7 @@ public {// dgame demo
 		}
 		void log () // allocates (writeln)
 		{
-			version (none)
-				tiles[].neighborhood!((i,j) => Tile (null, fvec(i,j)))
-					(player.pos.fmap!(to!int), 1)
-					.lexi.writeln;
-
 			writeln (`heat: `, player.heat);
-
-			version (none) 
-				Nat[0..20].by (Nat[0..20]).neighborhood (vector (0,0), 2).lexi.writeln;
 		}
 
 		TICKS_PER_FRAME.throttle!(() => (
