@@ -184,7 +184,12 @@ public {// to library
 	auto ref each (alias f, R)(auto ref R range)
 	{
 		foreach (ref item; range)
-			cast(void) f (item);
+		{
+			auto value ()() {cast(void) f (item);}
+			auto tuple ()() {cast(void) f (item.expand);}
+
+			Match!(value, tuple);
+		}
 
 		return range;
 	}
@@ -265,6 +270,21 @@ public {// to library
 
 		return Only!(CommonType!Args, n)([args], interval (0, n));
 	}
+
+	auto index_zip (S)(S space){return zip (space.orthotope, space);}
+
+	template fprod (funcs...)
+	{
+		auto fprod (T...)(Tuple!T tuple)
+		{
+			auto apply (uint i)()
+			{
+				return funcs[i](tuple[i]);
+			}
+
+			return Map!(apply, Ordinal!T).tuple;
+		}
+	}
 }
 public {// dgame demo
 	import std.stdio;
@@ -282,6 +302,11 @@ public {// dgame demo
 
 	enum ubyte MAX_FPS = 60;
 	enum ubyte TICKS_PER_FRAME = 1000 / MAX_FPS;
+
+	auto keys_pressed (R)(R keys)
+	{
+		return keys.map!(Keyboard.isPressed);
+	}
 
 	struct Player
 	{
@@ -397,9 +422,10 @@ public {// dgame demo
 			` tttt       `
 			`           z`
 			`   ttttttttt`
-			.laminate (MAP_WIDTH, MAP_HEIGHT) // REVIEW alternatively, stitch 1D array of rows into 2D array of elements (string[] -> Array!(2, char))
-			.zip (map!fvec (Nat[0..MAP_WIDTH].by (Nat[0..MAP_HEIGHT]))) // REVIEW alternatively, zipwith indices, map fprod(identity, fvec)
-			.map!((char c, fvec pos)
+			.laminate (MAP_WIDTH, MAP_HEIGHT)
+			.index_zip
+			.map!(fprod!(fvec, identity))
+			.map!((fvec pos, char c)
 				{// assign tile
 					auto dims () {return pos * TILE_SIZE;}
 
@@ -441,11 +467,6 @@ public {// dgame demo
 
 		bool running = true;
 
-		auto keys_pressed (R)(R keys)
-		{
-			return keys.map!(Keyboard.isPressed);
-		}
-
 		void delegate()[Keyboard.Key] key_bindings = [
 			Keyboard.Key.Esc: () {
 				wnd.push(Event.Type.Quit);
@@ -462,7 +483,7 @@ public {// dgame demo
 			}
 		];
 
-		void update_game_state ()
+		void update_game_state () // BUG if snowball runs into ground tile while falling, he will stay halfway through the tile and be grounded - he should keep falling
 		{
 			enum dt = 1f/MAX_FPS;
 
@@ -494,15 +515,19 @@ public {// dgame demo
 			while (wnd.poll(&event))
 				if (auto response_to = event.type in event_responses)
 					(*response_to)(event);
-
+		}
+		void react_to_keyboard ()
+		{
 			with (Keyboard.Key)
-				keys_pressed (only (Left, Right))
-					.zip (only (-1, 1))
+				zip (
+					only (Left, Right).keys_pressed,
+					only (-1, 1)
+				)
 					.filter!((pressed,_) => pressed)
-					.map!((_,dir) => dir)
-					.each!(dir => player.roll (dir))
-					.each!(dir => player.spritesheet.selectFrame ((-dir + 1).to!ubyte/2)) // TODO each tuple expand
-					;
+					.each!((_,dir) => (
+						player.roll (dir),
+						player.spritesheet.selectFrame ((-dir + 1).to!ubyte/2))
+					);
 		}
 		void update_fps_meter () // allocates (string appender)
 		{
@@ -531,6 +556,7 @@ public {// dgame demo
 		TICKS_PER_FRAME.throttle!(() => (
 			1? update_game_state : {},
 			1? respond_to_events : {},
+			1? react_to_keyboard : {}, // REVIEW keyboard reaction no longer restricted to player on ground - not like original demo, but feels better. i vote to keep this
 			1? update_fps_meter  : {},
 			1? draw              : {},
 			0? log               : {},
