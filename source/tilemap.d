@@ -7,6 +7,7 @@ private {// imports
 	import std.functional;
 	import std.math;
 	import std.traits : EnumMembers;
+	import std.random : uniform;
 }
 public {// tilemap
 	alias not = evx.meta.not;
@@ -220,6 +221,50 @@ public {// to library
 				)
 			);
 	}
+
+	struct Only (T, uint n)
+	{
+		T[n] data;
+		Interval!size_t slice;
+
+		auto front ()
+		{
+			return data[slice.left];
+		}
+		auto popFront ()
+		{
+			++slice.left;
+		}
+		auto back ()
+		{
+			return data[slice.right-1];
+		}
+		auto popBack ()
+		{
+			--slice.right;
+		}
+		auto empty ()
+		{
+			return slice.width == 0;
+		}
+
+		auto access (size_t i)
+		{
+			return data[i];
+		}
+		auto length () const
+		{
+			return slice.width;
+		}
+
+		mixin AdaptorOps!(access, length, RangeExt);
+	}
+	auto only (Args...)(Args args)
+	{
+		enum n = Args.length;
+
+		return Only!(CommonType!Args, n)([args], interval (0, n));
+	}
 }
 public {// dgame demo
 	import std.stdio;
@@ -233,7 +278,6 @@ public {// dgame demo
 	enum ubyte MAP_HEIGHT = 10;
 
 	enum ubyte TILE_SIZE = 32;
-	enum ubyte ROTATION = 90;
 	alias GRAVITY = Cons!(0, 0.25);
 
 	enum ubyte MAX_FPS = 60;
@@ -241,6 +285,12 @@ public {// dgame demo
 
 	struct Player
 	{
+		void roll (int direction)
+		{
+			move (direction.sgn * speed, 0);
+			rotate (direction.sgn * speed/radius * 180f/PI);
+		}
+
 		void move (float x, float y)
 		{
 			pos = fvec(pos.x + x, pos.y + y);
@@ -276,6 +326,9 @@ public {// dgame demo
 		Spritesheet spritesheet;
 
 		auto heat = 0f;
+
+		enum float speed = 0.1;
+		enum float radius = 0.5;
 	}
 	struct Tile 
 	{
@@ -284,14 +337,14 @@ public {// dgame demo
 
 		enum Mask : ubyte {
 			Air =		0,
-			Ground = 	2^^0,
-			Edge = 		2^^1,
-			Grass = 	2^^2,
-			Snow = 		2^^3,
-			Ice = 		2^^4,
-			Lava = 		2^^5,
-			Spikes = 	2^^6,
-			Brittle = 	2^^7,
+			Ground = 	1<<0,
+			Edge = 		1<<1,
+			Grass = 	1<<2,
+			Snow = 		1<<3,
+			Ice = 		1<<4,
+			Lava = 		1<<5,
+			Spikes = 	1<<6,
+			Brittle = 	1<<7,
 		}
 
 		Mask mask;
@@ -319,10 +372,15 @@ public {// dgame demo
 	{
 		Window wnd = Window(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE, "Dgame Test");
 
-		enum path = `/home/vlad/github/Dgame-Tutorial/`;
+		enum path = `./img/`;
 
-		Texture player_tex = Texture(Surface((path)~"Basti-Box.png"));
-		Texture tile_tex = Texture(Surface((path)~"Tile.png"));
+		Texture player_tex = Texture(Surface((path)~"snowball.png"));
+
+		Texture[] tile_textures = [
+			Texture(Surface((path)~"Tile2.png")),
+			Texture(Surface((path)~"Tile3.png")),
+			Texture(Surface((path)~"Tile5.png")),
+		];
 
 		fvec start_pos, target_pos;
 
@@ -347,7 +405,7 @@ public {// dgame demo
 
 					// REVIEW telescoping ctors
 					if (c == 't')
-						return Tile (new Sprite(tile_tex, Vector2f (dims.tuple.expand)), pos, Tile.Mask.Grass);
+						return Tile (new Sprite(tile_textures[uniform (0, tile_textures.length)], Vector2f (dims.tuple.expand)), pos, Tile.Mask.Grass);
 					else if (c == 'a')
 						return Tile (null, start_pos = pos);
 					else if (c == 'z')
@@ -367,7 +425,7 @@ public {// dgame demo
 		bool player_in_air ()
 		{
 			return tiles[
-				(player.pos + fvec(0,1))
+				vector (player.pos.x.round, player.pos.y + 1)
 					.fmap!(to!int)
 					.clamp_to (tiles)
 					.tuple.expand
@@ -377,29 +435,18 @@ public {// dgame demo
 		}
 		
 		// REVIEW how to abstract out fps meter into debug widget
-		Font fnt = Font((path)~"samples/font/arial.ttf", 12);
+		Font fnt = Font("./font/arial.ttf", 12);
 		Text fps = new Text(fnt);
 		fps.setPosition(MAP_WIDTH * TILE_SIZE - 96, 4);
 
 		bool running = true;
 
+		auto keys_pressed (R)(R keys)
+		{
+			return keys.map!(Keyboard.isPressed);
+		}
+
 		void delegate()[Keyboard.Key] key_bindings = [
-			Keyboard.Key.Left: () {
-				if (not!player_in_air)
-				{
-					player.move(-1, 0);
-					player.rotate(ROTATION * -1);
-					player.spritesheet.selectFrame(0);
-				}
-			},
-			Keyboard.Key.Right: () {
-				if (not!player_in_air)
-				{
-					player.move(1, 0);
-					player.rotate(ROTATION);
-					player.spritesheet.selectFrame(1);
-				}
-			},
 			Keyboard.Key.Esc: () {
 				wnd.push(Event.Type.Quit);
 			}
@@ -419,7 +466,7 @@ public {// dgame demo
 		{
 			enum dt = 1f/MAX_FPS;
 
-			if (player.pos == target_pos)
+			if (all (zip (player.pos[], target_pos[]).map!approxEqual))
 			{
 				writeln (`You've won!`);
 				wnd.push(Event.Type.Quit);
@@ -447,6 +494,15 @@ public {// dgame demo
 			while (wnd.poll(&event))
 				if (auto response_to = event.type in event_responses)
 					(*response_to)(event);
+
+			with (Keyboard.Key)
+				keys_pressed (only (Left, Right))
+					.zip (only (-1, 1))
+					.filter!((pressed,_) => pressed)
+					.map!((_,dir) => dir)
+					.each!(dir => player.roll (dir))
+					.each!(dir => player.spritesheet.selectFrame ((-dir + 1).to!ubyte/2)) // TODO each tuple expand
+					;
 		}
 		void update_fps_meter () // allocates (string appender)
 		{
@@ -477,7 +533,7 @@ public {// dgame demo
 			1? respond_to_events : {},
 			1? update_fps_meter  : {},
 			1? draw              : {},
-			1? log               : {},
+			0? log               : {},
 			running
 		)).each!(Thread.sleep);
 	}
