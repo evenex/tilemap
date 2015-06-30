@@ -1,0 +1,15 @@
+{
+	"name": "tilemap",
+	"description": "generic queryable tilemap",
+	"copyright": "Copyright © 2015, Vlad Levenfeld",
+	"authors": ["Vlad Levenfeld"],
+	"license": "MIT",
+	"dependencies": {
+		"meta": "~master",
+		"infinity": "~master",
+		"interval": "~master",
+		"autodata": "~master",
+		"dgame": "~master"
+	},	
+	"targetType" : "executable"
+}
