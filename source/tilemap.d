@@ -62,11 +62,12 @@ public {// tilemap
     }
 }
 public {// to library
-    import core.time;
-    import core.thread;
-
     struct Throttle (alias f)
     {
+        import core.time;
+        import core.thread;
+        import Dgame.System;
+
         uint ticks_per_frame;
 
         StopWatch stopwatch;
@@ -114,11 +115,6 @@ public {// dgame demo
 
     enum ubyte MAX_FPS = 60;
     enum ubyte TICKS_PER_FRAME = 1000 / MAX_FPS;
-
-    auto keys_pressed (R)(R keys)
-    {
-        return keys.map!(Keyboard.isPressed);
-    }
 
     struct Player
     {
@@ -195,14 +191,14 @@ public {// dgame demo
             Tile.Mask.Ice: -25,
         ];
 
-        float rate (size_t i)()
+        float rate (Tile.Mask mask)()
         {
-            if (auto rate = (tile.mask & 2^^i) in melt_rates)
+            if (auto rate = (tile.mask & mask) in melt_rates)
                 return *rate;
             else return 0;
         }
 
-        return Map!(rate, Ordinal!(EnumMembers!(Tile.Mask))).sum;
+        return Map!(rate, EnumMembers!(Tile.Mask)).sum;
     }
 
     void main () 
@@ -235,7 +231,7 @@ public {// dgame demo
             `           z`
             `   ttttttttt`
             .laminate (MAP_WIDTH, MAP_HEIGHT)
-            .index_zip
+            .index
             .map!(fprod!(fvec, identity))
             .map!((fvec pos, char c)
                 {// assign tile
@@ -300,7 +296,7 @@ public {// dgame demo
             alias update this;
         }
 
-        TextWidget[] widgets = [
+        TextWidget[3] widgets = [
             TextWidget (font, (){static StopWatch sw_fps; return format ("FPS: %d", sw_fps.getCurrentFPS());})
                 .pos (fvec (MAP_WIDTH * TILE_SIZE - 126, 2)),
             TextWidget (font, () => format ("POS: (%.1f, %.1f)", player.pos.tuple.expand))
@@ -327,10 +323,8 @@ public {// dgame demo
             }
         ];
 
-        void update_game_state () // BUG if snowball runs into ground tile while falling, he will stay halfway through the tile and be grounded - he should keep falling
+        void update_game_state ()
         {
-            enum dt = 1f/MAX_FPS;
-
             if (all (zip (player.pos[], target_pos[]).map!approxEqual))
             {
                 writeln (`You've won!`);
@@ -342,10 +336,25 @@ public {// dgame demo
                 wnd.push(Event.Type.Quit);
             }
 
-            player.heat += tiles[].neighborhood (
-                player.pos.fmap!(to!int), 1
+            enum x0 = 1f/9;
+            enum x1 = 1f/(9*SQRT2);
+
+            enum dt = 1f/MAX_FPS;
+
+            player.heat += zip (
+                stencil ([
+                    x1, x0, x1,
+                    x0, x0, x0,
+                    x1, x0, x1
+                ]).cast_index_to!int
+                ,
+                tiles[].neighborhood (
+                    player.pos.fmap!(to!int), 1
+                )
+                .map!melt_rate,
             )
-                .map!melt_rate.lexi.sum // REVIEW sum is associative, should it require explicit lexicographic traversal?
+                .map!product
+                .lexi.sum // REVIEW sum is associative, should it require explicit lexicographic traversal?
                 * dt
             ;
 
@@ -364,8 +373,8 @@ public {// dgame demo
         {
             with (Keyboard.Key)
                 zip (
-                    only (Left, Right).keys_pressed,
-                    only (-1, 1)
+                    list (Left, Right).map!(Keyboard.isPressed),
+                    list (-1, 1)
                 )
                     .filter!((pressed,_) => pressed)
                     .each!((_,dir) => (
@@ -377,8 +386,7 @@ public {// dgame demo
         {
             wnd.clear();
 
-            foreach (ref widget; widgets)
-                wnd.draw (widget);
+            widgets.each!(widget => wnd.draw (widget));
 
             tiles[].lexi.filter!(tile => tile.sprite !is null)
                 .each!(tile => wnd.draw (tile.sprite));
@@ -399,6 +407,7 @@ public {// dgame demo
             1? draw              : {},
             0? log               : {},
             running
-        )).each!(Thread.sleep);
+        )).each!(core.thread.Thread.sleep);
     }
 }
+
